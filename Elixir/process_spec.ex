@@ -1,24 +1,25 @@
 defmodule ProcessSpec do
-  def spawn_client() do
-    {:ok, spawn_link(__MODULE__, :client, [])}
+  def spawn_client(reply_time) do
+    {:ok, spawn_link(__MODULE__, :client, [reply_time])}
   end
 
-  def client() do
+  def client(reply_time) do
     receive do
       {"Hello", pid, data} ->
-        Process.sleep(200)
+        Process.sleep(reply_time)
         send(pid, {"Done", self(), data})
-        client()
+        client(reply_time)
       _ ->
         IO.puts("Unexpected message received!")
     end
   end
 
-  def spawn_server(counter, data) do
-    pid = spawn_link(__MODULE__, :server, [counter, spawn_link(__MODULE__, :client, []), 0, data])
+  def spawn_server(counter, data, reply_time) do
+    pid = spawn_link(__MODULE__, :server, [counter, spawn_link(__MODULE__, :client, [reply_time]), 0, data])
     send(pid, "Start")
     {:ok, pid}
   end
+
   def server(counter, clients, message_count, data) do
     receive do
       "Start" ->
@@ -34,34 +35,43 @@ defmodule ProcessSpec do
         IO.puts("Unexpected message received!")
     end
   end
-  def spawn_counter() do
-    pid = spawn_link(__MODULE__, :aggregator, [0, :erlang.system_time(:millisecond), []])
+  def spawn_counter(interval, summation_mode) do
+    pid = spawn_link(__MODULE__, :aggregator, [0, :erlang.system_time(:millisecond), [], summation_mode])
     Process.register(pid, :counter)
-    spawn_link(__MODULE__, :logger, [pid])
+    if summation_mode != :avg_total do
+      spawn_link(__MODULE__, :logger, [pid, interval])
+    end
     {:ok, pid}
   end
-  def aggregator(n, start_time, record) do
+  def aggregator(n, start_time, record, mode) do
 
     receive do
       "Start" ->
-        aggregator(0, :erlang.system_time(:millisecond), [])
+        aggregator(0, :erlang.system_time(:millisecond), [], mode)
       "Update" ->
         elapsed_time = (:erlang.system_time(:millisecond)-start_time)/1000
-        aggregator(0, :erlang.system_time(:millisecond), [n/elapsed_time | record])
+        aggregator(0, :erlang.system_time(:millisecond), [n/elapsed_time | record], mode)
       "Stop" ->
-        average = :lists.sum(record) / length(record)
-        {:ok, file} = File.open("result.txt", [:append])
-        :io.format(file, "~.3f~n", [average])
+        {:ok, file} = File.open("r_400_500_ta_23.txt", [:append])
+        case mode do
+          :avg ->
+            average = :lists.sum(record) / length(record)
+            :io.format(file, "~.3f~n", [average])
+          :full ->
+            for n <- :lists.reverse(record) do
+              :io.format(file, "~.2f~n", [n])
+            end
+          :avg_total ->
+            :io.format(file, "~.3f~n", [(n*1000)/(:erlang.system_time(:millisecond)-start_time)])
+        end
       messages_count ->
-        aggregator(n+messages_count, start_time, record)
+        aggregator(n+messages_count, start_time, record, mode)
     end
   end
-  def spawn_logger(counter) do
-    {:ok, spawn(__MODULE__, :logger, [counter])}
-  end
-  def logger(counter) do
-    Process.sleep(1000)
+
+  def logger(counter, interval) do
+    Process.sleep(interval)
     send(counter,"Update")
-    logger(counter)
+    logger(counter, interval)
   end
 end

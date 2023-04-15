@@ -1,12 +1,12 @@
 defmodule Benchmark do
-  def start do
-    Process.register(spawn(Benchmark, :benchmark, [:on@one, 0]), :sub)
+  def start(node) do
+    Process.register(spawn(Benchmark, :benchmark, [node, 0]), :sub)
     :ok
   end
   def benchmark(fnode, system_pid) do
     receive do
-      {"Start", num_pairs, num_sups, num_fails, sup_strat} ->
-        pid = start_system(num_pairs, num_sups, num_fails, sup_strat, fnode)
+      {"Start", num_pairs, num_sups, num_fails, sup_strat, data_length, reply_time, measure_interval, injection_interval, supervision_mode, summation_mode } ->
+        pid = start_system(num_pairs, num_sups, num_fails, sup_strat, fnode, data_length, reply_time, measure_interval, injection_interval, supervision_mode, summation_mode)
         benchmark(fnode, pid)
       "Stop" ->
         send(:counter, "Stop")
@@ -21,19 +21,18 @@ defmodule Benchmark do
   end
   #Benchmark.start_system(100, 100, 10, {:one_for_one, 200000, 1}, :asd@asd)
   #maybe use builtin
-  def start_system(num_pairs, num_sups, num_fails, sup_strat, fnode) do
+  def start_system(num_pairs, num_sups, num_fails, sup_strat, fnode, data_length \\ 500, reply_time \\ 200, measure_interval \\ 1000, injection_interval \\ 1000, supervision_mode \\ :transient, summation_mode \\ :avg) do
     total_pairs = num_pairs*num_sups
     start_time = :erlang.system_time(:millisecond)
-    #IO.puts({:head_supervisor, {sup_strat, [gen_child_spec(:counter, :spawn_counter, [])]}})
-    {:ok, head_sup_name} = ProcessSup.start_link({:head_supervisor, {sup_strat, [gen_child_spec(:counter, :spawn_counter, [])]}})
+    {:ok, head_sup_name} = ProcessSup.start_link({:head_supervisor, {sup_strat, [gen_child_spec(:counter, :spawn_counter, [measure_interval, summation_mode])]}})
     [{_, counter, _, _}] = Supervisor.which_children(head_sup_name)
-    children = for n <- 1..num_pairs, do: gen_child_spec(gen_name("server", n), :spawn_server, [counter, bytes_generate(500)])
+    children = for n <- 1..num_pairs, do: gen_child_spec(gen_name("server", n), :spawn_server, [counter, bytes_generate(data_length), reply_time], supervision_mode)
     supervisor_list = for n <- 1..num_sups, do: spawn_supervisor(head_sup_name, sup_strat, children, n)
     elapsed_time = :erlang.system_time(:millisecond) - start_time
     IO.puts("#{total_pairs} process pairs spawned and started in #{elapsed_time/1000} seconds.")
     IO.puts("Starting benchmark!")
     if num_fails != 0 do
-      send({:injector, fnode}, {"Start", supervisor_list, trunc(total_pairs*5*num_fails/100)})
+      send({:injector, fnode}, {"Start", supervisor_list, trunc(total_pairs*5*num_fails/100), injection_interval})
       Process.sleep(5000)
     end
     send(counter, "Start")
@@ -51,10 +50,10 @@ defmodule Benchmark do
     :type => :supervisor,
     :modules => [ProcessSup]}
   end
-  def gen_child_spec(name, spawner, args) do
+  def gen_child_spec(name, spawner, args, supervision_mode \\ :transient) do
     %{:id => name,
     :start => {ProcessSpec, spawner, args},
-    :restart => :transient,
+    :restart => supervision_mode,
     :type => :worker,
     :modules => [ProcessSpec]}
   end
@@ -62,7 +61,7 @@ defmodule Benchmark do
     String.to_atom(type <> Integer.to_string(n))
   end
   def bytes_generate(size) do
-    for _n <-1..size, do: 1
+    :erlang.list_to_binary(for _n <-1..size, do: 1)
   end
 
 end
